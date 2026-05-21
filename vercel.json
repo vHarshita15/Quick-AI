@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 2,
   "installCommand": "npm install --prefix client && npm install --prefix server",
   "builds": [
     {
@@ -24,10 +24,5 @@
       "src": "/(.*)",
       "dest": "/client/dist/index.html"
     }
-  ],
-  "functions": {
-    "server/server.js": {
-      "runtime": "nodejs20.x"
-    }
-  }
+  ]
 }
