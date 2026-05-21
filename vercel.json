@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "installCommand": "npm install --prefix client && npm install --prefix server",
+  "builds": [
+    {
+      "src": "client/package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "dist" }
+    },
+    {
+      "src": "server/server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/server/server.js"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/client/dist/index.html"
+    }
+  ],
+  "functions": {
+    "server/server.js": {
+      "runtime": "nodejs20.x"
+    }
+  }
+}
