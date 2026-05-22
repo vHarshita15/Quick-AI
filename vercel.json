@@ -1,6 +1,5 @@
 {
   "version": 2,
-  "installCommand": "npm install --prefix client && npm install --prefix server",
   "builds": [
     {
       "src": "client/package.json",
