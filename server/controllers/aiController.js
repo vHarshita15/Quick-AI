@@ -22,27 +22,41 @@ if (OPENAI_API_KEY) {
         baseURL: "https://api.openai.com/v1",
     });
 } else if (GEMINI_API_KEY) {
-    AI = new GoogleGenerativeAI({ apiKey: GEMINI_API_KEY });
+    AI = new GoogleGenerativeAI(GEMINI_API_KEY);
     useGemini = true;
 }
 
 // Model selection based on which provider is available
-const AI_MODEL = process.env.AI_MODEL || (OPENAI_API_KEY ? "gpt-3.5-turbo" : "gemini-1.5-flash");
+const AI_MODEL = process.env.AI_MODEL || (
+    OPENAI_API_KEY
+        ? "gpt-3.5-turbo"
+        : "gemini-2.5-flash-lite"
+);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Helper function to call AI regardless of provider (OpenAI or Gemini)
+const blogTitleFallback = () => JSON.stringify([
+    "The Future of Artificial Intelligence in 2026",
+    "How Machine Learning is Transforming Business",
+    "Top 10 AI Tools Every Developer Should Know",
+    "The Ethics of Artificial Intelligence",
+    "Building Intelligent Applications with Modern AI"
+]);
+
+const isBlogTitlePrompt = (prompt) => typeof prompt === 'string' && (
+    prompt.toLowerCase().includes('blog') ||
+    prompt.toLowerCase().includes('title')
+);
+
 const callAI = async (prompt, systemMessage = "", maxTokens = 800) => {
     try {
         if (useGemini) {
-            // Using Google Gemini API
             const model = AI.getGenerativeModel({ model: AI_MODEL });
             const fullPrompt = systemMessage ? `${systemMessage}\n\nUser request: ${prompt}` : prompt;
             const result = await model.generateContent(fullPrompt);
             const text = result.response.text();
             return text;
         } else {
-          I
             const response = await AI.chat.completions.create({
                 model: AI_MODEL,
                 messages: [
@@ -55,31 +69,20 @@ const callAI = async (prompt, systemMessage = "", maxTokens = 800) => {
             return response.choices[0].message.content;
         }
     } catch (error) {
-        console.error('[callAI] API error:', error.message);
-        // FALLBACK: Return mock response when API fails (for development)
-        if (prompt.toLowerCase().includes('blog') || prompt.toLowerCase().includes('title')) {
-            return JSON.stringify([
-                "The Future of Artificial Intelligence in 2026",
-                "How Machine Learning is Transforming Business",
-                "Top 10 AI Tools Every Developer Should Know",
-                "The Ethics of Artificial Intelligence",
-                "Building Intelligent Applications with Modern AI"
-            ]);
+        if (isBlogTitlePrompt(prompt)) {
+            console.warn('[callAI] Falling back to local blog title content because the AI provider returned an error:', error.message);
+            return blogTitleFallback();
         }
+        console.error('[callAI] API error:', error.message);
         throw error;
     }
 };
 
-// Helper for multi-turn conversations
 const callAIMultiTurn = async (messages, maxTokens = 800) => {
     if (useGemini) {
-        // Using Google Gemini API with startChat for multi-turn
         const model = AI.getGenerativeModel({ model: AI_MODEL });
         const chat = model.startChat();
-        
         let lastResponse = null;
-        
-        // Process all messages except the last one to build context
         for (let i = 0; i < messages.length - 1; i++) {
             const msg = messages[i];
             if (msg.role === "user") {
@@ -87,17 +90,13 @@ const callAIMultiTurn = async (messages, maxTokens = 800) => {
                 lastResponse = result.response.text();
             }
         }
-        
-        // Send the final user message
         const lastMsg = messages[messages.length - 1];
         if (lastMsg.role === "user") {
             const result = await chat.sendMessage(lastMsg.content);
             return result.response.text();
         }
-        
         return lastResponse;
     } else {
-        // Using OpenAI API - it natively supports multi-turn
         const response = await AI.chat.completions.create({
             model: AI_MODEL,
             messages: messages,
@@ -109,11 +108,17 @@ const callAIMultiTurn = async (messages, maxTokens = 800) => {
     }
 };
 
-
 const isRateLimitedError = (error) => {
     const status = error?.status || error?.response?.status;
     const message = error?.message || "";
-    return status === 429 || message.toLowerCase().includes("429") || message.toLowerCase().includes("rate limit");
+    return (
+        status === 429 ||
+        status === 503 ||
+        message.toLowerCase().includes("429") ||
+        message.toLowerCase().includes("503") ||
+        message.toLowerCase().includes("rate limit") ||
+        message.toLowerCase().includes("high demand")
+    );
 };
 
 const rateLimitMessage = "Rate limit high. Please try again in a few seconds.";
@@ -135,38 +140,28 @@ const cleanAIJson = (text) => {
 const parseAiTitleArray = (text) => {
     const cleaned = cleanAIJson(text);
     let jsonText = cleaned;
-    
-    // Try to find a complete JSON array
     const arrayMatch = cleaned.match(/\[.*\]/s);
     if (arrayMatch) {
         jsonText = arrayMatch[0];
     } else if (cleaned.startsWith('[')) {
-        // If it starts with [ but no closing bracket, try to fix it
         jsonText = cleaned + ']';
     }
-
     try {
         const parsed = JSON.parse(jsonText);
         if (Array.isArray(parsed)) {
             return parsed.map((item) => String(item).trim()).filter((item) => item.length > 0);
         }
     } catch (err) {
-        // ignore parse error and fallback to lines
         console.log('[parseAiTitleArray] JSON parse failed, trying line split:', err.message);
     }
-
-    // Fallback: split by newlines and extract quoted strings or plain text
     const lines = cleaned
         .split(/\r?\n/)
         .map((line) => {
-            // Remove JSON quotes if present
             let cleaned = line.replace(/^\s*[\[\,"]/, '').replace(/["]\s*$/, '').trim();
-            // Remove leading numbers/bullets
             cleaned = cleaned.replace(/^\s*\d+[\.\)]\s*/, '').trim();
             return cleaned;
         })
         .filter((line) => line.length > 0 && !line.match(/^[\[\]\{}\,]*$/));
-    
     return lines;
 };
 
@@ -192,25 +187,14 @@ const hasAllResumeSections = (text) => {
 
 const withRateLimitRetry = async (fn, { retries = 3, baseDelayMs = 1000 } = {}) => {
     let attempt = 0;
-
     while (true) {
         try {
             return await fn();
         } catch (error) {
             attempt += 1;
-
-            if (!isRateLimitedError(error)) {
-                throw error;
-            }
-
-            // If caller wants retries, only do so up to `retries` attempts.
-            if (attempt > retries) {
-                throw error;
-            }
-
+            if (!isRateLimitedError(error)) throw error;
+            if (attempt > retries) throw error;
             console.warn(`[withRateLimitRetry] rate limited, retrying attempt ${attempt} of ${retries}`);
-
-            // Respect Retry-After if present (seconds or HTTP-date).
             const retryAfter = error?.response?.headers?.['retry-after'] ?? error?.headers?.['retry-after'];
             let delayMs = null;
             if (retryAfter) {
@@ -222,14 +206,11 @@ const withRateLimitRetry = async (fn, { retries = 3, baseDelayMs = 1000 } = {}) 
                     if (!Number.isNaN(date)) delayMs = Math.max(0, date - Date.now());
                 }
             }
-
             if (delayMs === null) {
-                // Fallback to exponential backoff with jitter.
                 const exponentialDelay = baseDelayMs * Math.pow(2, attempt - 1);
                 const jitter = Math.floor(Math.random() * 250);
                 delayMs = exponentialDelay + jitter;
             }
-
             await sleep(delayMs);
         }
     }
@@ -239,88 +220,67 @@ export const generateArticle = async (req, res) => {
     try {
         const userId = req.userId || "test-user";
         const { prompt, length } = req.body;
-
         if (!prompt) {
-            return res.json({
-                success: false,
-                message: "Prompt is required"
-            });
+            return res.json({ success: false, message: "Prompt is required" });
         }
-
         const content = await withRateLimitRetry(
             () => callAI(prompt, "", length || 800),
             { retries: 0, baseDelayMs: 1000 }
         );
-
         if (!content) {
-            return res.json({
-                success: false,
-                message: "No content returned from AI"
-            });
+            return res.json({ success: false, message: "No content returned from AI" });
         }
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type)
                 VALUES (${userId}, ${prompt}, ${content}, 'article')`;
         }
-
-        res.json({
-            success: true,
-            content
-        });
+        res.json({ success: true, content });
     } catch (error) {
         console.log(error);
-
         if (isRateLimitedError(error)) {
-            return res.json({
-                success: false,
-                message: rateLimitMessage
-            });
+            return res.json({ success: false, message: rateLimitMessage });
         }
-
-        return res.json({
-            success: false,
-            message: formatAIError(error)
-        });
+        return res.json({ success: false, message: formatAIError(error) });
     }
 };
+
 export const generateBlogTitles = async (req, res) => {
     try {
         const userId = req.userId;
         const { prompt, length } = req.body;
-
         const systemMessage = `You are an expert blog title generator. Produce catchy, engaging, and SEO-friendly blog post titles. Return exactly 5 titles in a JSON array of strings and nothing else.`;
-
-        const raw = await withRateLimitRetry(
-            () => callAI(prompt, systemMessage, length || 300),
-            { retries: 3, baseDelayMs: 1000 }
-        );
-
+        let raw;
+        try {
+            raw = await withRateLimitRetry(
+                () => callAI(prompt, systemMessage, length || 300),
+                { retries: 3, baseDelayMs: 1000 }
+            );
+        } catch (error) {
+            if (isBlogTitlePrompt(prompt)) {
+                console.warn('[generateBlogTitles] Falling back to local blog title content after AI error:', error.message);
+                raw = blogTitleFallback();
+            } else {
+                throw error;
+            }
+        }
         console.log('[generateBlogTitles] raw response:', raw);
-        
         const titles = parseAiTitleArray(raw);
         console.log('[generateBlogTitles] parsed titles:', titles);
-
         if (!titles.length) {
             console.log('[generateBlogTitles] parsing failed, raw was:', JSON.stringify(raw));
             return res.json({ success: false, message: `Unable to parse title output from AI. Raw response: ${typeof raw === 'string' ? raw.substring(0, 200) : JSON.stringify(raw)}` });
         }
-
         const content = JSON.stringify(titles);
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type)
                 VALUES (${userId}, ${prompt}, ${content}, 'blog_title')`;
         }
-
         res.json({ success: true, content });
     } catch (error) {
         console.log(error.message);
-
         if (isRateLimitedError(error)) {
             return res.json({ success: false, message: rateLimitMessage });
         }
-
         res.json({ success: false, message: formatAIError(error) });
     }
 };
@@ -329,22 +289,18 @@ export const generateImage = async (req, res) => {
     try {
         const userId = req.userId;
         const { prompt, publish } = req.body;
-
         const form = new FormData();
         form.append("prompt", prompt);
-
         const { data } = await axios.post("https://clipdrop-api.co/text-to-image/v1", form, {
             headers: { "x-api-key": process.env.CLIPDROP_API_KEY },
             responseType: "arraybuffer",
         });
         const base64Image = `data:image/png;base64,${Buffer.from(data, "binary").toString("base64")}`;
         const { secure_url } = await cloudinary.uploader.upload(base64Image);
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type, publish)
                 VALUES (${userId}, ${prompt}, ${secure_url}, 'image', ${publish ?? false})`;
         }
-
         res.json({ success: true, content: secure_url });
     } catch (error) {
         console.log(error.message);
@@ -356,23 +312,16 @@ export const removeImageBackground = async (req, res) => {
     try {
         const userId = req.userId;
         const image = req.file;
-
         if (!image) {
-            return res.json({
-                success: false,
-                message: "Image is required"
-            });
+            return res.json({ success: false, message: "Image is required" });
         }
-
         const { secure_url } = await cloudinary.uploader.upload(image.path, {
             transformation: [{ effect: "background_removal" }]
         });
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type)
                 VALUES (${userId}, ${"Remove background from image"}, ${secure_url}, 'image')`;
         }
-
         res.json({ success: true, content: secure_url });
     } catch (error) {
         console.log(error.message);
@@ -385,32 +334,25 @@ export const removeImageObject = async (req, res) => {
         const userId = req.userId;
         const { object } = req.body;
         const image = req.file;
-
         if (!image) {
             return res.json({ success: false, message: "Image is required" });
         }
-
         if (!object || !object.trim()) {
             return res.json({ success: false, message: "Object name is required" });
         }
-
         const objectLabel = object.trim();
-
         const uploadResult = await cloudinary.uploader.upload(image.path, {
             resource_type: "image",
         });
-
         const imageUrl = cloudinary.url(uploadResult.public_id, {
             secure: true,
             resource_type: "image",
             transformation: [{ effect: `gen_remove:${objectLabel}` }],
         });
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type)
                 VALUES (${userId}, ${`Removed ${objectLabel} from image`}, ${imageUrl}, 'image')`;
         }
-
         res.json({ success: true, content: imageUrl });
     } catch (error) {
         console.log(error.message);
@@ -422,48 +364,34 @@ export const resumeReview = async (req, res) => {
     try {
         const userId = req.userId;
         const resume = req.file;
-
         console.log('[resumeReview] request start', {
             authHeaderPresent: Boolean(req.headers.authorization),
             fileProvided: Boolean(resume),
             fileName: resume?.originalname,
             fileSize: resume?.size,
         });
-
         if (!resume) {
-            return res.status(400).json({
-                success: false,
-                message: "Resume file is required"
-            });
+            return res.status(400).json({ success: false, message: "Resume file is required" });
         }
-
         if (resume.size > 10 * 1024 * 1024) {
-            return res.status(400).json({
-                success: false,
-                message: "Resume file size exceeds 10MB limit"
-            });
+            return res.status(400).json({ success: false, message: "Resume file size exceeds 10MB limit" });
         }
-
         const dataBuffer = fs.readFileSync(resume.path);
         const pdfData = await pdf(dataBuffer);
-
         let resumeText = String(pdfData.text || '').trim();
         console.log('[resumeReview] extracted text length', resumeText.length);
-
         if (!resumeText) {
             return res.status(400).json({
                 success: false,
                 message: "Unable to extract text from the uploaded resume. Please upload a searchable PDF or ensure the document contains selectable text."
             });
         }
-
         const MAX_RESUME_CHARS = 17000;
         let truncatedNote = '';
         if (resumeText.length > MAX_RESUME_CHARS) {
             resumeText = resumeText.slice(0, MAX_RESUME_CHARS);
             truncatedNote = '\n\n[NOTE: The resume text has been truncated to fit model input limits. Review only the provided content.]';
         }
-
         const messages = [
             {
                 role: "system",
@@ -495,12 +423,10 @@ Resume Content:
 ${resumeText}${truncatedNote}`
             }
         ];
-
         let content = await withRateLimitRetry(
             () => callAIMultiTurn(messages, 2200),
             { retries: 3, baseDelayMs: 1000 }
         );
-
         if (!hasAllResumeSections(content)) {
             const continueMessages = [
                 { role: 'system', content: messages[0].content },
@@ -511,22 +437,16 @@ ${resumeText}${truncatedNote}`
                     content: 'The previous review appears incomplete. Continue and complete any missing sections from the exact outline, finishing the resume review in markdown.'
                 }
             ];
-
             const continuation = await withRateLimitRetry(
                 () => callAIMultiTurn(continueMessages, 1200),
                 { retries: 2, baseDelayMs: 1000 }
             );
-
-            content = `${content.trim()}
-
-${continuation.trim()}`.trim();
+            content = `${content.trim()}\n\n${continuation.trim()}`.trim();
         }
-
         if (userId) {
             await sql`INSERT INTO creations (user_id, prompt, content, type)
                 VALUES (${userId}, ${"Review the uploaded resume"}, ${content}, 'resume-review')`;
         }
-
         res.json({ success: true, content });
     } catch (error) {
         console.error('[resumeReview] error', {
