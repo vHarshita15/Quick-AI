@@ -1,9 +1,7 @@
 import { Eraser, Sparkles } from 'lucide-react'
 import { useState } from 'react'
-import axios from 'axios'
+import axios from '../api/axiosClient'
 import toast from 'react-hot-toast'
-
-axios.defaults.baseURL = import.meta.env.VITE_BASE_URL || 'http://localhost:3000'
 
 const RemoveBackground = () => {
 

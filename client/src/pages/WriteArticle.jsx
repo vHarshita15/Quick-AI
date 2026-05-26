@@ -1,11 +1,8 @@
 import { useState } from 'react'
 import { Edit, Sparkles } from 'lucide-react'
 import Markdown from 'react-markdown'
-import axios from 'axios'
+import axios from '../api/axiosClient'
 import toast from 'react-hot-toast'
-
-axios.defaults.baseURL =
-  import.meta.env.VITE_BASE_URL || 'http://localhost:3000'
 
 const markdownComponents = {
   h1: ({ children }) => <h1 style={{ fontSize: '1.4rem', fontWeight: '700', marginBottom: '0.5rem', marginTop: '1rem', color: '#1e293b' }}>{children}</h1>,

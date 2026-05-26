@@ -1,9 +1,7 @@
 import React, { useState } from 'react'
 import { Sparkles, Hash } from 'lucide-react'
 import toast from 'react-hot-toast'
-import axios from 'axios'
-
-axios.defaults.baseURL = import.meta.env.VITE_BASE_URL || 'http://localhost:3000'
+import axios from '../api/axiosClient'
 
 const blogLength = [
   { text: 'Short' },

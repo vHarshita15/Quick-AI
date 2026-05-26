@@ -12,6 +12,7 @@
   "license": "ISC",
   "dependencies": {
     "@clerk/express": "^2.1.18",
+    "@google/generative-ai": "^0.24.1",
     "@neondatabase/serverless": "^1.1.0",
     "@tailwindcss/typography": "^0.5.19",
     "axios": "^1.16.1",

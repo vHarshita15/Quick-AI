@@ -1,7 +1,6 @@
 import express from "express";
 import multer from "multer";
 import { upload as baseUpload } from "../configs/multer.js";
-
 import {
     generateArticle,
     generateBlogTitles,
@@ -13,8 +12,6 @@ import {
 const upload = multer({ storage: multer.diskStorage({}) });
 
 const aiRouter = express.Router();
-
-
 aiRouter.post("/generate-article", generateArticle);
 aiRouter.post("/generate-blog-title", generateBlogTitles);
 aiRouter.post("/generate-image", generateImage);
