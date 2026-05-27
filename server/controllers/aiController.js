@@ -1,37 +1,21 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
-import { OpenAI } from "openai";
+import Groq from "groq-sdk";
 import sql from "../configs/db.js";
 import axios from "axios";
 import { cloudinary } from "../configs/cloudinary.js";
 import fs from "fs";
 import pdf from "pdf-parse/lib/pdf-parse.js";
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
-if (!OPENAI_API_KEY && !GEMINI_API_KEY) {
-    throw new Error('Missing AI API key. Set OPENAI_API_KEY or GEMINI_API_KEY in your environment.');
+if (!GROQ_API_KEY) {
+    throw new Error('Missing AI API key. Set GROQ_API_KEY in your environment.');
 }
 
-let AI = null;
-let useGemini = false;
+const AI = new Groq({ apiKey: GROQ_API_KEY });
 
-if (OPENAI_API_KEY) {
-    AI = new OpenAI({
-        apiKey: OPENAI_API_KEY,
-        baseURL: "https://api.openai.com/v1",
-    });
-} else if (GEMINI_API_KEY) {
-    AI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    useGemini = true;
-}
-
-// Model selection based on which provider is available
-const AI_MODEL = process.env.AI_MODEL || (
-    OPENAI_API_KEY
-        ? "gpt-3.5-turbo"
-        : "gemini-2.5-flash-lite"
-);
+// Groq model - fast and free
+const AI_MODEL = process.env.AI_MODEL || "llama-3.3-70b-versatile";
+// Other good options: "llama-3.1-8b-instant", "gemma2-9b-it"
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -50,62 +34,35 @@ const isBlogTitlePrompt = (prompt) => typeof prompt === 'string' && (
 
 const callAI = async (prompt, systemMessage = "", maxTokens = 800) => {
     try {
-        if (useGemini) {
-            const model = AI.getGenerativeModel({ model: AI_MODEL });
-            const fullPrompt = systemMessage ? `${systemMessage}\n\nUser request: ${prompt}` : prompt;
-            const result = await model.generateContent(fullPrompt);
-            const text = result.response.text();
-            return text;
-        } else {
-            const response = await AI.chat.completions.create({
-                model: AI_MODEL,
-                messages: [
-                    ...(systemMessage ? [{ role: "system", content: systemMessage }] : []),
-                    { role: "user", content: prompt }
-                ],
-                temperature: 0.7,
-                max_tokens: maxTokens,
-            });
-            return response.choices[0].message.content;
-        }
+        const response = await AI.chat.completions.create({
+            model: AI_MODEL,
+            messages: [
+                ...(systemMessage ? [{ role: "system", content: systemMessage }] : []),
+                { role: "user", content: prompt }
+            ],
+            temperature: 0.7,
+            max_tokens: maxTokens,
+        });
+        return response.choices[0].message.content;
     } catch (error) {
         if (isBlogTitlePrompt(prompt)) {
-            console.warn('[callAI] Falling back to local blog title content because the AI provider returned an error:', error.message);
+            console.warn('[callAI] Falling back to local blog title content because Groq returned an error:', error.message);
             return blogTitleFallback();
         }
-        console.error('[callAI] API error:', error.message);
+        console.error('[callAI] Groq API error:', error.message);
         throw error;
     }
 };
 
 const callAIMultiTurn = async (messages, maxTokens = 800) => {
-    if (useGemini) {
-        const model = AI.getGenerativeModel({ model: AI_MODEL });
-        const chat = model.startChat();
-        let lastResponse = null;
-        for (let i = 0; i < messages.length - 1; i++) {
-            const msg = messages[i];
-            if (msg.role === "user") {
-                const result = await chat.sendMessage(msg.content);
-                lastResponse = result.response.text();
-            }
-        }
-        const lastMsg = messages[messages.length - 1];
-        if (lastMsg.role === "user") {
-            const result = await chat.sendMessage(lastMsg.content);
-            return result.response.text();
-        }
-        return lastResponse;
-    } else {
-        const response = await AI.chat.completions.create({
-            model: AI_MODEL,
-            messages: messages,
-            temperature: 0.1,
-            top_p: 0.9,
-            max_tokens: maxTokens,
-        });
-        return response.choices[0].message.content;
-    }
+    const response = await AI.chat.completions.create({
+        model: AI_MODEL,
+        messages: messages,
+        temperature: 0.1,
+        top_p: 0.9,
+        max_tokens: maxTokens,
+    });
+    return response.choices[0].message.content;
 };
 
 const isRateLimitedError = (error) => {
@@ -121,13 +78,13 @@ const isRateLimitedError = (error) => {
     );
 };
 
-const rateLimitMessage = "Rate limit high. Please try again in a few seconds.";
+const rateLimitMessage = "Rate limit hit. Please try again in a few seconds.";
 
 const formatAIError = (error) => {
     const status = error?.status || error?.response?.status;
     const body = error?.response?.data || error?.message || 'Unknown AI error';
     if (status === 403) {
-        return `AI permission denied (403). Check your OpenAI/Gemini API key, model access, and cloud permissions. ${typeof body === 'string' ? body : JSON.stringify(body)}`;
+        return `Groq permission denied (403). Check your GROQ_API_KEY. ${typeof body === 'string' ? body : JSON.stringify(body)}`;
     }
     return typeof body === 'string' ? body : JSON.stringify(body);
 };
@@ -383,14 +340,15 @@ export const resumeReview = async (req, res) => {
         if (!resumeText) {
             return res.status(400).json({
                 success: false,
-                message: "Unable to extract text from the uploaded resume. Please upload a searchable PDF or ensure the document contains selectable text."
+                message: "Unable to extract text from the uploaded resume. Please upload a searchable PDF."
             });
         }
-        const MAX_RESUME_CHARS = 17000;
+        // Groq models have smaller context windows, so keep limit tight
+        const MAX_RESUME_CHARS = 12000;
         let truncatedNote = '';
         if (resumeText.length > MAX_RESUME_CHARS) {
             resumeText = resumeText.slice(0, MAX_RESUME_CHARS);
-            truncatedNote = '\n\n[NOTE: The resume text has been truncated to fit model input limits. Review only the provided content.]';
+            truncatedNote = '\n\n[NOTE: Resume text truncated to fit model limits. Review only the provided content.]';
         }
         const messages = [
             {
